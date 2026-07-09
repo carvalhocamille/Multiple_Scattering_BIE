@@ -4,6 +4,12 @@ import matplotlib.pyplot as plt
 from scipy.special import legendre, factorial
 import collections.abc
 
+# scipy >= 1.17 removed sph_harm; restore it (old signature: sph_harm(m, n, azimuth, polar))
+if not hasattr(sc.special, 'sph_harm'):
+    def _sph_harm(m, n, theta, phi):
+        return sc.special.sph_harm_y(np.asarray(n, dtype=int), np.asarray(m, dtype=int), phi, theta)
+    sc.special.sph_harm = _sph_harm
+
 
 def jn(k,a,n):
     return sc.special.spherical_jn( n, k * a, derivative = False )    
@@ -26,8 +32,11 @@ def ComputeExpansionFunction(x, y, z, kw, N):
     # compute the expansion coefficients
     B_n = np.exp( 1j * n * np.pi / 2.0 ) * ( 2 * n + 1 ) 
 
-    c1 = 1j*kw*dist * Djn(kw, dist, n)*jn(kw, dist, n) 
-    c2 = 1 - 1j*(kw*dist)**2 * Djn(kw, dist, n) * h1n(kw, dist, n)
+    # NOTE: Djn already contains a factor k (Djn = k * j_n'), so the BIE symbol
+    # 1 - i (k a)^2 j_n'(ka) h_n(ka) is written with a single extra factor kw*dist.
+    # c1/c2 then reduces (via the Wronskian) to -j_n'(ka)/h_n'(ka), the Mie coefficient.
+    c1 = 1j*kw*dist**2 * Djn(kw, dist, n)*jn(kw, dist, n)
+    c2 = 1 - 1j*kw*dist**2 * Djn(kw, dist, n) * h1n(kw, dist, n)
     
     u_coeffs = np.sqrt(4 * np.pi/(2*n+1)) * B_n * c1/c2
     return u_coeffs
@@ -213,7 +222,7 @@ def ComputeSurface(theta0, phi0, s, t):
     J = Jlen / np.sin(theta)
     
     # Special case: When theta == 0
-    indx = np.where(theta == 0)[0]
+    indx = np.where(np.atleast_1d(theta) == 0)[0]
 
     if len(indx) > 0:
         NU[indx] = [0, 0, 1]
