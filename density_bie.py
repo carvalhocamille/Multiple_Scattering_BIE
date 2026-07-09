@@ -21,7 +21,9 @@ def Computemu(n_order, kw):
     # COMPOSITE ANGLE ARRAYS
     PHI = np.tile(t, N)
     THETA = np.repeat(np.arccos(μ), M)
-    W_GL = WTS
+    # weights matching the theta-slow/phi-fast ordering of THETA/PHI above
+    # (WTS from GaussLegendre is ordered mu-fast and would be mismatched)
+    W_GL = np.repeat(ws, M) * (4.0 / M)
     T = np.tile(t, N)
     S = np.repeat(s, M)
     #print('phi', phi, 'THETA', THETA)
@@ -40,7 +42,7 @@ def Computemu(n_order, kw):
     f, _, _, _ = ComputeFunction(x[:, 0], x[:, 1], x[:, 2], kw)
 
     # COMPUTE SPHERICAL HARMONICS EXPANSION COEFFICIENTS
-    f_coeffs = (Y_GL.T @np.diag(W_GL)) @ f 
+    f_coeffs = (Y_GL.conj().T @ np.diag(W_GL)) @ f 
     #print('f', f, 'f_coeffs',f_coeffs, 'YGLT', Y_GL.T)
     # ALLOCATE MEMORY FOR MATRICES
     Kmtx1 = np.zeros((N * M, n_order**2), dtype = complex)
@@ -89,10 +91,10 @@ def Computemu(n_order, kw):
                 k += 1
                 
     # COMPUTE THE SECOND INNER PRODUCT
-    K1 = (Y_GL.T @ np.diag(W_GL)) @ Kmtx1
+    K1 = (Y_GL.conj().T @ np.diag(W_GL)) @ Kmtx1
     #print('K1',K1)
-    K2 = (Y_GL.T @np.diag(W_GL)) @ Kmtx2
-    K = (Y_GL.T @np.diag(W_GL)) @ Kmtx
+    K2 = (Y_GL.conj().T @ np.diag(W_GL)) @ Kmtx2
+    K = (Y_GL.conj().T @ np.diag(W_GL)) @ Kmtx
 
     # SOLVE THE GALERKIN SYSTEM OF EQUATIONS
     c_coeffs1 = np.linalg.solve(K1 - K2, f_coeffs)
