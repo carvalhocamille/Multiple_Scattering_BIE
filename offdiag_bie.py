@@ -128,7 +128,60 @@ def dlp_column_subtract(N, k, a, C, x, quad):
     return _dlp_column_ckk(N, k, a, C, x, quad, subtract=True)
 
 
-def dlp_columns_batch(N, k, a, C, X, quad, method="subtract", chunk=256):
+try:                                                  # optional acceleration
+    import numba as _nb
+
+    @_nb.njit(parallel=True, fastmath=True, cache=True)
+    def _ckk_kernel_numba(X, C, a, k, S, T, wq, N, sqn, rotate, subtract):
+        npts, nq = X.shape[0], S.shape[0]
+        out = np.zeros((npts, N), dtype=np.complex128)
+        for p in _nb.prange(npts):
+            dx, dy, dz = X[p, 0] - C[0], X[p, 1] - C[1], X[p, 2] - C[2]
+            rx = np.sqrt(dx * dx + dy * dy + dz * dz)
+            nsx, nsy, nsz = dx / rx, dy / rx, dz / rx
+            ct0 = nsz
+            st0 = np.sqrt(nsx * nsx + nsy * nsy)
+            cp0, sp0 = (nsx / st0, nsy / st0) if st0 > 0 else (1.0, 0.0)
+            B = 0.0 + 0.0j
+            Pl = np.empty(N)
+            for q in range(nq):
+                ss, cs = np.sin(S[q]), np.cos(S[q])
+                stt, ctt = np.sin(T[q]), np.cos(T[q])
+                if rotate:                # SphereRotation, unit-sphere point
+                    nux = ct0 * cp0 * ss * ctt - sp0 * ss * stt + st0 * cp0 * cs
+                    nuy = ct0 * sp0 * ss * ctt + cp0 * ss * stt + st0 * sp0 * cs
+                    nuz = -st0 * ss * ctt + ct0 * cs
+                else:
+                    nux, nuy, nuz = ss * ctt, ss * stt, cs
+                ydx = X[p, 0] - (C[0] + a * nux)
+                ydy = X[p, 1] - (C[1] + a * nuy)
+                ydz = X[p, 2] - (C[2] + a * nuz)
+                r = np.sqrt(ydx * ydx + ydy * ydy + ydz * ydz)
+                nu_yd = nux * ydx + nuy * ydy + nuz * ydz
+                G = 0.5 * a * a * np.exp(1j * k * r) / r
+                D = ((1.0 / r - 1j * k) * nu_yd / r) * G
+                wd = wq[q] * D
+                pm, pc = 0.0, 1.0
+                for n in range(N):
+                    out[p, n] += wd * pc * sqn[n]
+                    pm, pc = pc, ((2 * n + 1) * nuz * pc - n * pm) / (n + 1)
+                if subtract:
+                    nsd = nsx * ydx + nsy * ydy + nsz * ydz
+                    nu_ns = nux * nsx + nuy * nsy + nuz * nsz
+                    pw = np.exp(-1j * k * nsd)
+                    B += wq[q] * pw * (1j * k * nu_ns * G - D)
+            if subtract:
+                pm, pc = 0.0, 1.0
+                for n in range(N):
+                    out[p, n] += B * pc * sqn[n]
+                    pm, pc = pc, ((2 * n + 1) * nsz * pc - n * pm) / (n + 1)
+        return out
+except ImportError:
+    _ckk_kernel_numba = None
+
+
+def dlp_columns_batch(N, k, a, C, X, quad, method="subtract", chunk=256,
+                      engine="auto"):
     """Vectorized D[Ptilde_n](x) for many targets at once.
 
     X has shape (npts, 3); returns (npts, N).  Same quadratures as the
@@ -140,11 +193,29 @@ def dlp_columns_batch(N, k, a, C, X, quad, method="subtract", chunk=256):
     sphere the surface Jacobian is 1 and the normal equals the surface point,
     so ComputeSurface is not needed.  Orders of magnitude faster than looping
     over targets; used by the interactive demo.
+
+    engine='numba' uses a fused parallel kernel (needs the optional numba
+    package; ~4x faster again on 4 cores), 'numpy' forces the pure-numpy
+    path, 'auto' picks numba when available.
     """
     from essentials_bie import SphereRotation
 
     X = np.atleast_2d(np.asarray(X, dtype=float))
     out = np.zeros((len(X), N), dtype=complex)
+
+    if engine == "numba" and _ckk_kernel_numba is None:
+        raise ImportError("engine='numba' requested but numba is not installed")
+    if method != "exact" and engine in ("auto", "numba") and _ckk_kernel_numba is not None:
+        subtract = method == "subtract"
+        if method == "naive":
+            S, rotate = quad.S_pgq, False
+            wq = np.repeat(quad.wt, quad.Mq) / quad.Mq
+        else:
+            S, rotate = quad.S_lin, True
+            wq = np.repeat(quad.ws, quad.Mq) / quad.Mq * np.sin(quad.S_lin)
+        sqn = np.sqrt((2 * np.arange(N) + 1) / (4 * np.pi))
+        return _ckk_kernel_numba(X, np.asarray(C, dtype=float), float(a), float(k),
+                                 S, quad.T, wq, N, sqn, rotate, subtract)
 
     if method == "exact":
         n = np.arange(N)
