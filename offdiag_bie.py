@@ -81,8 +81,13 @@ def dlp_column_naive(N, k, a, C, x, quad):
     return quad.wt @ np.apply_along_axis(quad.average_t, 0, D[:, None] * dens)
 
 
-def dlp_column_subtract(N, k, a, C, x, quad):
-    """D[Ptilde_n](x) by rotated-grid quadrature with plane-wave subtraction."""
+def _dlp_column_ckk(N, k, a, C, x, quad, subtract):
+    """Carvalho-Khatri-Kim quadrature for D[Ptilde_n](x): the grid is rotated
+    so its north pole sits at the closest point y*, the polar angle uses the
+    linear map s = pi (mu + 1) / 2 of the Gauss-Legendre nodes (NOT arccos),
+    and the spherical Jacobian sin(s) appears explicitly in the integrand.
+    With subtract=True the plane wave matching the density at y* is subtracted
+    and restored analytically (the close-evaluation method)."""
     d = np.asarray(x, dtype=float) - C
     rx = np.linalg.norm(d)
     nustar = d / rx                                   # normal at the closest point y*
@@ -91,15 +96,30 @@ def dlp_column_subtract(N, k, a, C, x, quad):
     _, _, Yu, nu, J = ComputeSurface(theta0, phi0, quad.S_lin, quad.T)
     y = C + a * Yu
     dens = ptilde(N, Yu[:, 2])                        # density at grid points, (pts, N)
-    denstar = ptilde(N, nustar[2])                    # density at y*, (N,)
     yd = x - y
     r = np.linalg.norm(yd, axis=1)
     G = 0.5 * a**2 * J * np.exp(1j * k * r) / r * np.sin(quad.S_lin)
     D = ((1 / r - 1j * k) * np.sum(nu * yd, axis=1) / r) * G
-    pw = np.exp(-1j * k * (yd @ nustar))              # plane wave, value 1 at y*
-    integrand = D[:, None] * (dens - pw[:, None] * denstar) \
-        + (G * 1j * k * (nu @ nustar) * pw)[:, None] * denstar
+    if subtract:
+        denstar = ptilde(N, nustar[2])                # density at y*, (N,)
+        pw = np.exp(-1j * k * (yd @ nustar))          # plane wave, value 1 at y*
+        integrand = D[:, None] * (dens - pw[:, None] * denstar) \
+            + (G * 1j * k * (nu @ nustar) * pw)[:, None] * denstar
+    else:
+        integrand = D[:, None] * dens
     return quad.ws @ np.apply_along_axis(quad.average_t, 0, integrand)
+
+
+def dlp_column_rotated(N, k, a, C, x, quad):
+    """D[Ptilde_n](x) by the Carvalho-Khatri-Kim quadrature (rotated grid,
+    linear s-map, explicit sin(s) Jacobian) WITHOUT the plane-wave subtraction."""
+    return _dlp_column_ckk(N, k, a, C, x, quad, subtract=False)
+
+
+def dlp_column_subtract(N, k, a, C, x, quad):
+    """D[Ptilde_n](x) by the Carvalho-Khatri-Kim quadrature WITH the
+    plane-wave subtraction (the full close-evaluation method)."""
+    return _dlp_column_ckk(N, k, a, C, x, quad, subtract=True)
 
 
 def coupling_block(N, k, a_src, C_src, a_tgt, C_tgt, quad, method="subtract"):
@@ -111,6 +131,7 @@ def coupling_block(N, k, a_src, C_src, a_tgt, C_tgt, quad, method="subtract"):
     """
     column = {"exact": dlp_column_exact,
               "naive": dlp_column_naive,
+              "rotated": dlp_column_rotated,
               "subtract": dlp_column_subtract}[method]
     mu = np.cos(quad.S_pgq[::quad.Mq])                # GL nodes, mu-ordering of quad
     vals = np.zeros((len(mu), N), dtype=complex)
