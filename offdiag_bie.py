@@ -102,7 +102,13 @@ def _dlp_column_ckk(N, k, a, C, x, quad, subtract):
     D = ((1 / r - 1j * k) * np.sum(nu * yd, axis=1) / r) * G
     if subtract:
         denstar = ptilde(N, nustar[2])                # density at y*, (N,)
-        pw = np.exp(-1j * k * (yd @ nustar))          # plane wave, value 1 at y*
+        # Plane wave with phase anchored at x: pw(y*) = exp(-ik*eps), not 1.
+        # This deviates from Carvalho (2021, Prop. 3), which uses
+        # exp(ik nu*.(y - y*)) with value exactly 1 at y*; the Green's-identity
+        # restoration below is exact for either choice, and anchoring at x
+        # makes exp(ikr)*pw nearly stationary at the peak, which is observed
+        # to improve the restoration quadrature from O(eps) to O(eps^2).
+        pw = np.exp(-1j * k * (yd @ nustar))
         integrand = D[:, None] * (dens - pw[:, None] * denstar) \
             + (G * 1j * k * (nu @ nustar) * pw)[:, None] * denstar
     else:
