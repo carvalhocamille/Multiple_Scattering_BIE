@@ -128,6 +128,88 @@ def dlp_column_subtract(N, k, a, C, x, quad):
     return _dlp_column_ckk(N, k, a, C, x, quad, subtract=True)
 
 
+def dlp_columns_batch(N, k, a, C, X, quad, method="subtract", chunk=256):
+    """Vectorized D[Ptilde_n](x) for many targets at once.
+
+    X has shape (npts, 3); returns (npts, N).  Same quadratures as the
+    per-point dlp_column_* functions (method in 'naive'/'rotated'/'subtract'/
+    'exact'), but evaluated in numpy batches: the rotation, kernel and
+    Legendre recurrence broadcast over (chunk, nquad), and the plane-wave
+    subtraction uses the fact that its contribution is rank-one across the
+    basis columns (out[:, n] = A_n + B * Ptilde_n(y*)).  On the unit source
+    sphere the surface Jacobian is 1 and the normal equals the surface point,
+    so ComputeSurface is not needed.  Orders of magnitude faster than looping
+    over targets; used by the interactive demo.
+    """
+    from essentials_bie import SphereRotation
+
+    X = np.atleast_2d(np.asarray(X, dtype=float))
+    out = np.zeros((len(X), N), dtype=complex)
+
+    if method == "exact":
+        n = np.arange(N)
+        jp = sp.spherical_jn(n, k * a, derivative=True)
+        d = X - C
+        r = np.linalg.norm(d, axis=1)
+        hn = sp.spherical_jn(n, k * r[:, None]) + 1j * sp.spherical_yn(n, k * r[:, None])
+        return 1j * k**2 * a**2 * jp * hn * ptilde(N, d[:, 2] / r)
+
+    subtract = method == "subtract"
+    if method == "naive":
+        S, rotate = quad.S_pgq, False
+        wq = np.repeat(quad.wt, quad.Mq) / quad.Mq
+    else:                                             # 'rotated' or 'subtract'
+        S, rotate = quad.S_lin, True
+        wq = np.repeat(quad.ws, quad.Mq) / quad.Mq * np.sin(quad.S_lin)
+    T = quad.T
+    sqn = np.sqrt((2 * np.arange(N) + 1) / (4 * np.pi))   # Ptilde normalization
+
+    for lo in range(0, len(X), chunk):
+        x = X[lo:lo + chunk]
+        d = x - C
+        rx = np.linalg.norm(d, axis=1)
+        nustar = d / rx[:, None]
+        if rotate:
+            theta0 = np.arctan2(np.hypot(nustar[:, 0], nustar[:, 1]), nustar[:, 2])
+            phi0 = np.arctan2(nustar[:, 1], nustar[:, 0])
+            th, ph = SphereRotation(S[None, :], T[None, :],
+                                    theta0[:, None], phi0[:, None])
+        else:
+            th, ph = np.broadcast_arrays(S[None, :], T[None, :])
+        # unit-sphere grid points = outward normals; source points y = C + a*nu
+        nux = np.sin(th) * np.cos(ph)
+        nuy = np.sin(th) * np.sin(ph)
+        nuz = np.cos(th)
+        ydx = x[:, 0, None] - (C[0] + a * nux)
+        ydy = x[:, 1, None] - (C[1] + a * nuy)
+        ydz = x[:, 2, None] - (C[2] + a * nuz)
+        r = np.sqrt(ydx**2 + ydy**2 + ydz**2)
+        nu_yd = nux * ydx + nuy * ydy + nuz * ydz
+        G = 0.5 * a**2 * np.exp(1j * k * r) / r           # 2pi/4pi folded into 0.5
+        D = ((1 / r - 1j * k) * nu_yd / r) * G
+        WD = wq * D                                       # weighted DLP kernel
+
+        # A_n = sum_q WD * P_n(nuz): three-term Legendre recurrence, no 3D array
+        Pm, Pc = np.zeros_like(nuz), np.ones_like(nuz)
+        A = np.empty((len(x), N), dtype=complex)
+        for n in range(N):
+            A[:, n] = np.sum(WD * Pc, axis=1)
+            Pm, Pc = Pc, ((2 * n + 1) * nuz * Pc - n * Pm) / (n + 1)
+        A *= sqn
+
+        if subtract:
+            # rank-one correction: out_n = A_n + B * Ptilde_n(cos theta(y*))
+            nsd = nustar[:, 0, None] * ydx + nustar[:, 1, None] * ydy \
+                + nustar[:, 2, None] * ydz
+            nu_nustar = nux * nustar[:, 0, None] + nuy * nustar[:, 1, None] \
+                + nuz * nustar[:, 2, None]
+            pw = np.exp(-1j * k * nsd)                    # phase anchored at x
+            B = np.sum(wq * pw * (1j * k * nu_nustar * G - D), axis=1)
+            A += B[:, None] * ptilde(N, nustar[:, 2])
+        out[lo:lo + chunk] = A
+    return out
+
+
 def coupling_block(N, k, a_src, C_src, a_tgt, C_tgt, quad, method="subtract"):
     """Galerkin block <Ptilde_m, D_src[Ptilde_n]> over the target sphere.
 
