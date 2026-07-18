@@ -4,6 +4,12 @@ import matplotlib.pyplot as plt
 from scipy.special import legendre, factorial
 import collections.abc
 
+# scipy >= 1.17 removed sph_harm; restore it (old signature: sph_harm(m, n, azimuth, polar))
+if not hasattr(sc.special, 'sph_harm'):
+    def _sph_harm(m, n, theta, phi):
+        return sc.special.sph_harm_y(np.asarray(n, dtype=int), np.asarray(m, dtype=int), phi, theta)
+    sc.special.sph_harm = _sph_harm
+
 
 def jn(k,a,n):
     return sc.special.spherical_jn( n, k * a, derivative = False )    
@@ -26,8 +32,11 @@ def ComputeExpansionFunction(x, y, z, kw, N):
     # compute the expansion coefficients
     B_n = np.exp( 1j * n * np.pi / 2.0 ) * ( 2 * n + 1 ) 
 
-    c1 = 1j*kw*dist * Djn(kw, dist, n)*jn(kw, dist, n) 
-    c2 = 1 - 1j*(kw*dist)**2 * Djn(kw, dist, n) * h1n(kw, dist, n)
+    # NOTE: Djn already contains a factor k (Djn = k * j_n'), so the BIE symbol
+    # 1 - i (k a)^2 j_n'(ka) h_n(ka) is written with a single extra factor kw*dist.
+    # c1/c2 then reduces (via the Wronskian) to -j_n'(ka)/h_n'(ka), the Mie coefficient.
+    c1 = 1j*kw*dist**2 * Djn(kw, dist, n)*jn(kw, dist, n)
+    c2 = 1 - 1j*kw*dist**2 * Djn(kw, dist, n) * h1n(kw, dist, n)
     
     u_coeffs = np.sqrt(4 * np.pi/(2*n+1)) * B_n * c1/c2
     return u_coeffs
@@ -96,19 +105,16 @@ def GaussLegendre( N ):
     wwt = wt * np.pi/2
     # compute the periodic trapezoid rule
     ϕ = -np.pi + np.arange(2*N) * np.pi / N
-    # meshgrid of indices
-    [ indx, jndx ] = np.meshgrid( np.arange(N), np.arange(2*N) )
 
-    # stretch indices
-    indx = indx.reshape(2*N*N)
-    jndx = jndx.reshape(2*N*N)
+    # stretched quadrature points and weights: μ varies FAST, ϕ varies slow.
+    # CAUTION: this is the opposite ordering of grids built with
+    # np.repeat(θ, 2N) / np.tile(ϕ, N); build matching weights with
+    # np.repeat(wt, 2N) * np.pi / N in that case.
+    MU  = np.tile( μ, 2*N )
+    PHI = np.repeat( ϕ, N )
+    WTS = np.tile( wt, 2*N ) * np.pi / N
 
-    # compute the quadrature points and weights
-    MU  = μ[indx]
-    PHI = ϕ[jndx]
-    WTS = wt[indx] * np.pi / N
-    
-    # return original μ and ϕ vectors along with stretched vectors MU and PHI and quadrature weight vector WTS ( μ = cos(𝜃), 𝜃 corresponding to the polar angle) 
+    # return original μ and ϕ vectors along with stretched vectors MU and PHI and quadrature weight vector WTS ( μ = cos(𝜃), 𝜃 corresponding to the polar angle)
     return μ, ϕ, MU, PHI, WTS, wwt
 #######################################
 def ComputeSphericalHarmonics( N, THETA, PHI ):
@@ -116,109 +122,58 @@ def ComputeSphericalHarmonics( N, THETA, PHI ):
     This function computes a matrix whose columns correspond to spherical harmonics ordered by their order and degree in a specific way. The rows of the matrix correspond to the evaluation of each spherical harmonic over a set of cosine of polar angles and azimuthal angles. order: n degree: m
     """    
     # allocate memory for the vectors and matrices
-    nvec = np.full( N*N, '0', dtype = np.int32 )
-    mvec = np.full( N*N, '0', dtype = np.int32 )
-    if np.isscalar(THETA)==False:
-        Ynm  = np.full( ( len(THETA), N*N ), 'nan', dtype = 'complex' )
-    else:
-        Ynm  = np.full( ( 1, N*N ), 'nan', dtype = 'complex' )   
+    nvec = np.zeros( N*N, dtype = np.int32 )
+    mvec = np.zeros( N*N, dtype = np.int32 )
+    npts = 1 if np.isscalar(THETA) else len(np.atleast_1d(THETA))
+    Ynm  = np.zeros( ( npts, N*N ), dtype = complex )
     # compute the columns of the spherical harmonics matrix
     j = 0
-
     for n in range(N):
         for m in range(-n,n+1):
-            # compute nvec and mvec entries
             nvec[j] = n
             mvec[j] = m
-            # compute the column of Ynm
-            Ynm[:,j] = sc.special.sph_harm( m, n, PHI, THETA  )
+            Ynm[:,j] = sc.special.sph_harm( m, n, PHI, THETA )
             j += 1
-            
+
     return Ynm, nvec, mvec
 #######################################
 def ComputeSurface(theta0, phi0, s, t):
-    # Call SphereRotation to get rotated angles
+    """
+    Parametrization of the unit sphere on the grid (s, t) rotated so that its
+    north pole s = 0 sits at (theta0, phi0).  Returns the rotated angles
+    (theta, phi), the surface points Y, the outward unit normals NU and the
+    Jacobian J = |Y_s x Y_t| / sin(s)  (the sin(s) factor is applied by the
+    caller together with the quadrature weights).
+
+    For scalar (s, t) the points Y have shape (3,) and NU, J keep a leading
+    singleton dimension, matching the historical interface.
+
+    To generalize to a non-spherical, star-shaped surface, scale Y by a
+    radius function R(theta, phi) here and include its derivatives in
+    Y_theta / Y_phi below.
+    """
     theta, phi = SphereRotation(s, t, theta0, phi0)
-    #print('theta', theta, 'phi', phi )
-    # Compute the vector on the unit sphere and its partial derivatives
-    x = np.sin(theta) * np.cos(phi)
-    y = np.sin(theta) * np.sin(phi)
-    z = np.cos(theta)
+    scalar = np.ndim(theta) == 0
+    th, ph = np.atleast_1d(theta), np.atleast_1d(phi)
 
-    x_theta = np.cos(theta) * np.cos(phi)
-    y_theta = np.cos(theta) * np.sin(phi)
-    z_theta = -np.sin(theta)
-    
-    x_phi = -np.sin(theta) * np.sin(phi)
-    y_phi = np.sin(theta) * np.cos(phi)
-    z_phi = np.zeros_like(z)
+    # surface point and its tangents with respect to the rotated angles
+    Y = np.column_stack((np.sin(th) * np.cos(ph), np.sin(th) * np.sin(ph), np.cos(th)))
+    Y_theta = np.column_stack((np.cos(th) * np.cos(ph), np.cos(th) * np.sin(ph), -np.sin(th)))
+    Y_phi = np.column_stack((-np.sin(th) * np.sin(ph), np.sin(th) * np.cos(ph), np.zeros_like(th)))
 
-    # Compute the radius function and its partial derivatives
-    R = np.ones_like(x)
-    R_x = np.zeros_like(R)
-    R_y = np.zeros_like(R)
-    R_z = np.zeros_like(R)
-
-    # Compute the surface vector and its partial derivatives
-    A, B, C = 1, 1, 1
-
-    Y = np.array([A * R * x, B * R * y, C * R * z]).T
-    Y_x = np.array([A * R + A* R_x *x,  B*R_z*y,  C*R_x*z]).T
-    Y_y = np.array([ A* R_y *x, B * R + B* R_y *y, + C* R_y *z]).T
-    Y_z = np.array([ A* R_z *x, + B* R_z *y, C * R + C* R_z *z]).T
-
-    # ADJUST WHEN len  = 0 for scalar 
-    if np.isscalar(theta)==False:
-        xt = np.reshape(x_theta, (1, len(x_theta)))
-        yt = np.reshape(y_theta, (1, len(y_theta)))
-        zt = np.reshape(z_theta, (1, len(z_theta)))
-
-        xp = np.reshape(x_phi, (1, len(x_phi)))
-        yp = np.reshape(y_phi, (1, len(y_phi)))
-        zp = np.reshape(z_phi, (1, len(z_phi)))
-
-        at = xt * Y_x[:,0] + yt * Y_y[:,0] + zt* Y_z[:,0]
-        bt = xt*Y_x[:,1] + yt * Y_y[:,1] + zt * Y_z[:,1]
-        ct = xt * Y_x[:,2] + yt * Y_y[:,2] + zt * Y_z[:,2]
-        Y_theta = np.vstack((at,bt,ct)).T
-
-        ap = xp * Y_x[:,0] + yp * Y_y[:,0] + zp* Y_z[:,0]
-        bp = xp*Y_x[:,1] + yp * Y_y[:,1] + zp * Y_z[:,1]
-        cp = xp * Y_x[:,2] + yp * Y_y[:,2] + zp * Y_z[:,2]
-        Y_phi = np.vstack((ap,bp,cp)).T
-
-    else:
-        xt = x_theta
-        yt = y_theta
-        zt = z_theta
-        xp = x_phi
-        yp = y_phi
-        zp = z_phi
-
-        at = xt * Y_x[0] + yt * Y_y[0] + zt* Y_z[0]
-        bt = xt*Y_x[1] + yt * Y_y[1] + zt * Y_z[1]
-        ct = xt * Y_x[2] + yt * Y_y[2] + zt * Y_z[2]
-        Y_theta = np.vstack((at,bt,ct)).T
-
-        ap = xp * Y_x[0] + yp * Y_y[0] + zp* Y_z[0]
-        bp = xp*Y_x[1] + yp * Y_y[1] + zp * Y_z[1]
-        cp = xp * Y_x[2] + yp * Y_y[2] + zp * Y_z[2]
-        Y_phi = np.vstack((ap,bp,cp)).T
-
-    # Compute the unit normal vectors
+    # unit normal and Jacobian; at the pole (theta == 0, Jvec == 0) the sphere
+    # limit is NU = e_z, J = 1
     Jvec = np.cross(Y_theta, Y_phi)
     Jlen = np.linalg.norm(Jvec, axis=1)
-    NU = np.vstack((np.divide(Jvec[:,0], Jlen), np.divide(Jvec[:,1], Jlen), np.divide(Jvec[:,2], Jlen))).T
-    # Compute the Jacobian
-    J = Jlen / np.sin(theta)
-    
-    # Special case: When theta == 0
-    indx = np.where(theta == 0)[0]
+    pole = th == 0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        NU = Jvec / Jlen[:, None]
+        J = Jlen / np.sin(th)
+    NU[pole] = [0.0, 0.0, 1.0]
+    J[pole] = 1.0
 
-    if len(indx) > 0:
-        NU[indx] = [0, 0, 1]
-        J[indx] = np.sqrt(( -B * C * R[indx] * R_x[indx])**2 + ( -A * C * R[indx] * R_y[indx])**2 + (A * B * R[indx] * R[indx])**2)
-
+    if scalar:
+        return theta, phi, Y[0], NU, J
     return theta, phi, Y, NU, J
 
 #######################################
