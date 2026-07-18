@@ -36,5 +36,24 @@ This is code treating the close evaluation problem for boundary integral equatio
   (the exact scaling relation is documented in the demo notebook) and extend
   `ComputeSurface` to non-spherical shapes.
 
+## Multiple scatterers
+
+The close-evaluation coupling has since been carried through to full
+multi-body solvers. `multisphere_bie.py` + `Nspheres_offaxis.ipynb` handle
+$N$ sound-hard spheres at **arbitrary** (off-axis) centers in the full
+$Y_n^m$ basis, with the coupling blocks assembled by rotated-grid +
+plane-wave subtraction and validated against the exact multipole identity and
+rotation covariance. `starshape_bie.py` extends `ComputeSurface` to smooth
+star-shaped axisymmetric bodies (sphere / peanut / mushroom cap) with a
+per-body center and orientation, providing the single-body operator, close
+evaluation of both layer potentials, and closest-point search.
+`starmulti_bie.py` + `nonspherical_scattering.ipynb` then couple several such
+star-shaped bodies at arbitrary positions/orientations into one Galerkin
+system (frame-invariant diagonal blocks, close-evaluation coupling blocks,
+automatic subtraction-vs-far-quadrature selection per target), validated in
+the sphere limit against `multisphere_bie`, by a multi-body Green's
+representation with point sources inside each body (including targets $10^{-3}$
+off each surface), and by self-convergence of the scattered field.
+
 Note: the code now requires numpy 2.x-compatible scipy; a compatibility shim
 in `essentials_bie.py` restores `scipy.special.sph_harm` on scipy ≥ 1.17.
