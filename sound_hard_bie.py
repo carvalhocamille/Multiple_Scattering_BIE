@@ -1,100 +1,83 @@
 import numpy as np
-import scipy as sc
-import matplotlib.pyplot as plt
-from scipy.special import legendre, factorial
-import collections.abc
-from essentials_bie import *
+
+from essentials_bie import (
+    GaussLegendre,
+    ComputeSphericalHarmonics,
+    ComputeSurface,
+    ComputeIncidentFunction,
+)
+
 
 def Compute_data(n_order, k):
-    # QUADRATURE RULES
+    """Galerkin solution of the sound-hard scattering BIE on the unit sphere.
+
+    Solves (1/2 I - K) u = S[d_n u_inc] for the trace u of the scattered field,
+    expanded in spherical harmonics Y_n^m, n < n_order, for an incident plane
+    wave exp(i k z).  Returns the N^2 expansion coefficients (columns ordered
+    as in ComputeSphericalHarmonics: n = 0..N-1, m = -n..n).
+
+    The integral operators are evaluated with the rotated-grid quadrature of
+    Carvalho, Khatri & Kim: for each collocation point (theta0, phi0) the
+    integration grid is rotated so that its north pole s = 0 coincides with
+    the collocation point, where the kernels are nearly singular.
+    """
     N = n_order
     M = 2 * N
 
-    # Gauss-Legendre/trapezoid product rule for theta (z = cos(theta))
-    μ, ϕ, mu, phi, WTS, ws = GaussLegendre( N )
-    # transform z quadrature rule for s quadrature rule
-    s = 0.5 * np.pi * (μ + 1)
-    z = np.arccos(μ)
-    # trapezoid rules for t
-    dt = np.pi / N
-    t = np.arange(-np.pi, np.pi, dt)
+    # Product quadrature rule: Gauss-Legendre in mu = cos(theta), periodic
+    # trapezoid in phi.  ws = (pi/2) * GL weights, for the map s = pi(mu+1)/2.
+    mu, _, _, _, _, ws = GaussLegendre(N)
+    s = 0.5 * np.pi * (mu + 1)
+    z = np.arccos(mu)
+    t = np.arange(-np.pi, np.pi, np.pi / N)
 
-    # COMPOSITE ANGLE ARRAYS
-    PHI = np.tile(t, N)
+    # Collocation grid on the sphere: theta slow, phi fast.
     THETA = np.repeat(z, M)
-    W_GL = WTS
-    T = np.tile(t, N)
+    PHI = np.tile(t, N)
+    # Quadrature weights in the same ordering (GL weight = 2*ws/pi, times the
+    # trapezoid weight 2*pi/M).
+    W_GL = np.repeat(ws, M) * (4.0 / M)
+
+    # Rotated integration grid parameters: s slow, t fast.
     S = np.repeat(s, M)
-    # SPHERICAL HARMONICS MATRIX
+    T = np.tile(t, N)
+
     Y_GL, _, _ = ComputeSphericalHarmonics(n_order, THETA, PHI)
-    
-    # COMPUTE THE NEUMANN BOUNDARY DATA
-    _, _, x, _, _ = ComputeSurface(0, 0, THETA, PHI)
-    f = ComputeIncidentFunction(x[:, 0], x[:, 1], x[:, 2], k)
 
-    #Comparison Spherical expansion of f   
-    dist  = np.sqrt(x[0, 0]**2+x[0, 1]**2+x[0, 2]**2)  
-    f_coeffs = np.zeros((len(THETA), n_order**2), dtype = complex)
-    # compute the expansion coefficients
-    j = 0
-    for nn in np.arange(n_order):
-        for m in range(-nn, nn + 1):
-            if m == 0:
-                B_n = np.exp(1j * nn * np.pi / 2.0 ) * ( 2 * nn + 1 ) 
-            else:
-                B_n = 0
-            print('B_n', B_n, 'jn', jn(k, dist, nn), 'dist', dist)
-            f_coeffs[:,j] = B_n * jn(k, dist, nn )
-            j += 1
-    #fc = np.tile(f_coeffs, n_order)
-    #fc= fc.flatten()
-    print('f', f, 'fc', f_coeffs, 'Y_GL', Y_GL)
-    FSH = (Y_GL * f_coeffs)
-    print('f', f, 'FSH', FSH) #,'f-FSH', f-FSH)
-    df_coeffs = B_n * Djn(k, dist, n_order)
-    # ALLOCATE MEMORY FOR MATRICES
-    Kmtx = np.zeros((N * M, n_order**2), dtype = complex)
-    F = np.zeros((N*M, 1), dtype = complex)
+    Kmtx = np.zeros((N * M, n_order**2), dtype=complex)
+    F = np.zeros(N * M, dtype=complex)
 
-    # COMPUTE THE FIRST INNER PRODUCT: BIE OPERATOR APPLIED TO SPHERICAL HARMONICS
     for j in range(N * M):
-        # set the values of theta0 and phi0
-        theta0 = THETA[j]
-        phi0 = PHI[j]
-        # compute ystar
+        theta0, phi0 = THETA[j], PHI[j]
         _, _, ystar, nustar, _ = ComputeSurface(0, 0, theta0, phi0)
-        # compute the surface
+
+        # integration surface rotated so its north pole is at (theta0, phi0)
         varTHETA, varPHI, y, nu, J = ComputeSurface(theta0, phi0, S, T)
-        
-        dfn = 1j*k* (nu[:,2]*f)
+
+        # Neumann data d_n u_inc = i k nu_z exp(i k z) at the rotated points
+        f = ComputeIncidentFunction(y[:, 0], y[:, 1], y[:, 2], k)
+        dfn = 1j * k * nu[:, 2] * f
+
         yd = ystar - y
         ydist = np.linalg.norm(yd, axis=1)
-        nu_nustar = np.sum(nustar * nu, axis=1)
         nu_x_y = np.sum(nu * yd, axis=1)
-        nustar_x_y = np.sum(nustar * yd, axis=1)
 
+        # single/double layer kernels times Jacobian and quadrature factors
+        # (the 1/(4 pi) of the Green's function and the 2 pi of the trapezoid
+        # rule combine into the 0.5)
         SLP = 0.5 * J * np.exp(1j * k * ydist) / ydist * np.sin(S)
         DLP = ((1 / ydist - 1j * k) * nu_x_y / ydist) * SLP
 
-        F[j]= np.dot((np.sum((SLP*dfn).reshape(M,N), axis=0) / M) ,ws)
-        
-        # compute the integral operation
-        kk = 0
-        for n in range(n_order):
-            for m in range(-n, n + 1):
-                # DLP
-                ktemp1 = sc.special.sph_harm( m, n, varPHI, varTHETA) * DLP 
-                ktemp2 = np.sum(ktemp1.reshape(M, N), axis=0) / M
-                Kmtx[j, kk] = np.dot(ktemp2, ws)             
-                kk += 1
+        # trapezoid average over t (fast index), then GL in s
+        F[j] = ws @ np.sum((SLP * dfn).reshape(N, M), axis=1) / M
 
-    #############################
-    #Projection onto spherical harmonics
-    RHS =  (Y_GL.T @ np.diag(W_GL)) @ F  
-    K = (Y_GL.T @ np.diag(W_GL)) @ Kmtx 
-    #print('RHS', RHS, 'K', K)
+        # DLP applied to every spherical harmonic at once
+        Ynm, _, _ = ComputeSphericalHarmonics(n_order, varTHETA, varPHI)
+        Kmtx[j, :] = ws @ np.sum((DLP[:, None] * Ynm).reshape(N, M, -1), axis=1) / M
 
-    # SOLVE THE GALERKIN SYSTEM OF EQUATIONS
-    c_coeffs1 = np.linalg.solve(0.5 * np.eye(n_order**2) - K, RHS)
+    # Galerkin projection onto the spherical harmonics
+    P = Y_GL.conj().T * W_GL
+    RHS = P @ F
+    K = P @ Kmtx
 
-    return c_coeffs1
+    return np.linalg.solve(0.5 * np.eye(n_order**2) - K, RHS)
