@@ -117,12 +117,16 @@ def _batch_dlp_local(shape, Nb, k, Xloc, quad, method, chunk=128):
         if subtract:
             # accurate closest-point normal + density anchor per target
             nustar = np.empty((nb, 3))
-            denstar = np.empty((nb, Nb2), dtype=complex)
+            th_star = np.empty(nb)
+            ph_star = np.empty(nb)
             for i in range(nb):
                 th_i, ph_i, _, nu_i = closest_point(shape, xb[i])
                 nustar[i] = nu_i
-                di, _, _ = ComputeSphericalHarmonics(Nb, th_i, ph_i)
-                denstar[i] = di[0]
+                th_star[i] = th_i
+                ph_star[i] = ph_i
+            # one batched harmonic evaluation for all anchors in the chunk
+            # (per-target 1-point calls dominated the runtime of this branch)
+            denstar, _, _ = ComputeSphericalHarmonics(Nb, th_star, ph_star)
             pw = np.exp(-1j * k * np.einsum("bqd,bd->bq", yd, nustar))
             nu_nustar = np.einsum("bqd,bd->bq", nu, nustar)
             # <D*wq, Ynm> - <D*wq, pw>*denstar + <G*ik*nu.nustar*pw*wq,1>*denstar
