@@ -55,5 +55,25 @@ the sphere limit against `multisphere_bie`, by a multi-body Green's
 representation with point sources inside each body (including targets $10^{-3}$
 off each surface), and by self-convergence of the scattered field.
 
+`Nspheres_interactive.ipynb` is the widget demo of the same story for three
+sound-hard spheres, where the exact multipole identity supplies pointwise
+ground truth and makes a true error map possible.
+`Nshapes_interactive.ipynb` carries that demo over to a chain of **arbitrary**
+star-shaped bodies: per-body shape, tilt and gap are chosen from widgets, the
+gaps are hit by bisecting the axial offset against a *measured* surface
+separation (there is no formula for two tilted peanuts), and — since no
+closed-form layer potential exists off a sphere — the error maps are taken
+against the same subtraction quadrature at a much higher order, with the
+reference's own self-convergence reported alongside.  `starshape_bie.py` also
+gained `legendre_bump`, the family $\rho(\mu)=a(1+\varepsilon P_n(\mu))$,
+so the shape sliders sweep smooth bodies that are no special case of anything.
+
+`nonspherical_scattering.ipynb` closes with a naive-vs-CKK comparison at the
+level of the **boundary data**: the same three-body system re-solved with the
+coupling blocks assembled by plain product Gauss $\times$ PTR (`band=0.0`),
+the resulting field on the plane through the three bodies, the traces coated
+on the 3-D surfaces, and the traces along each body's section with the
+$xy$-plane and with that plane.
+
 Note: the code now requires numpy 2.x-compatible scipy; a compatibility shim
 in `essentials_bie.py` restores `scipy.special.sph_harm` on scipy ≥ 1.17.

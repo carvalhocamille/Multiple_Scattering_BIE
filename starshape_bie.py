@@ -119,6 +119,38 @@ class MushroomCap(Shape):
         return c[1] + 2 * c[2] * mu + 3 * c[3] * mu**2
 
 
+class LegendreBump(Shape):
+    """A one-parameter family of smooth axisymmetric bodies,
+
+        rho(mu) = a ( 1 + eps P_n(mu) ),      mu = cos(theta),
+
+    with P_n the degree-n Legendre polynomial.  rho is a polynomial in mu, so
+    the surface is smooth (in particular at the poles, where rho_theta =
+    -sin(theta) drho/dmu vanishes), and since |P_n| <= 1 on [-1, 1] the radius
+    stays strictly positive for |eps| < 1.  n = 1 gives a pear, n = 2 a
+    peanut-like waist, and larger n a body with n lobes stacked along the axis
+    -- a convenient knob for exercising the solver on shapes that are neither
+    spheres nor any hand-tuned special case.
+    """
+
+    def __init__(self, a=1.0, eps=0.25, n=3):
+        if not abs(eps) < 1.0:
+            raise ValueError("need |eps| < 1 to keep rho > 0")
+        self.a = float(a)
+        self.eps = float(eps)
+        self.n = int(n)
+        self._P = sp.legendre(self.n)
+        self._dP = self._P.deriv()
+
+    def rho(self, mu):
+        mu = np.asarray(mu, dtype=float)
+        return self.a * (1.0 + self.eps * np.polyval(self._P, mu))
+
+    def drho_dmu(self, mu):
+        mu = np.asarray(mu, dtype=float)
+        return self.a * self.eps * np.polyval(self._dP, mu)
+
+
 def sphere(a=1.0):
     return Sphere(a)
 
@@ -129,6 +161,10 @@ def peanut():
 
 def mushroom_cap():
     return MushroomCap()
+
+
+def legendre_bump(a=1.0, eps=0.25, n=3):
+    return LegendreBump(a, eps, n)
 
 
 # ---------------------------------------------------------------------------
